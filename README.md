@@ -7,6 +7,37 @@
 
 A process-based xylem growth model for simulating wood density and ring increment. This is a Python version of the original R package available at https://github.com/teatree1212/DH-model.
 
+## Key Results
+
+### Climate Forcing (2015-2100)
+20-year moving averages of temperature and soil moisture under different SSP scenarios for Malmö, Sweden:
+
+![Climate Forcing](examples/malmo_20yr_moving_averages_temp_soilmoisture.png)
+
+### Growth Rate Projections
+Growth rates (time to reach 1.5m height) for three conifer species under different climate scenarios:
+
+![Growth Rates - All Species](examples/malmo_all_species_growth_rates_combined.png)
+
+### Species-Specific 20-Year Moving Averages
+
+**European Silver Fir (Abies alba):**
+
+![Growth Rate MA - Abies alba](examples/malmo_abies_alba_growth_rates_ma20yr_all_scenarios.png)
+
+**Norway Spruce (Picea abies):**
+
+![Growth Rate MA - Picea abies](examples/malmo_picea_abies_growth_rates_ma20yr_all_scenarios.png)
+
+**Douglas Fir (Pseudotsuga menziesii):**
+
+![Growth Rate MA - Pseudo menzii](examples/malmo_pseudo_menzii_growth_rates_ma20yr_all_scenarios.png)
+
+### Growth Limitation Analysis
+Cumulative weeks where temperature and soil moisture fall below growth thresholds:
+
+![Growth Limitation](examples/malmo_cumulative_threshold_exceedances.png)
+
 ## Features
 
 - 🌲 Process-based tree ring growth simulation
