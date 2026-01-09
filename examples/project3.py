@@ -1327,6 +1327,279 @@ for species in SPECIES_TO_RUN:
     print(f"Saved moving average plot ({window_years}-year): {filename}")
     plt.show()
 
+##########################################
+### Create correlation scatter plots between growth rate and forcing data
+
+print("\n" + "="*70)
+print("Creating correlation scatter plots...")
+print("="*70)
+
+# We need to recalculate and store forcing data for each simulation
+# Let's run through the scenarios again and collect growth rates with their corresponding climate data
+
+correlation_data = {scenario: [] for scenario in scenarios}
+
+for scenario in scenarios:
+    print(f"\n--- Processing {scenario.upper()} for correlation analysis ---")
+    
+    # Load forcing data for this scenario
+    path_forcing = your_folder + f"{scenario}.csv"
+    Forcing = pd.read_csv(path_forcing)
+    
+    # Filter for Malmö
+    Malmö_clim = Forcing[Forcing['Location'] == "Malmö"].copy()
+    
+    for SELECTED_SPECIES in SPECIES_TO_RUN:
+        species_params = SPECIES_PARAMS[SELECTED_SPECIES]
+        
+        scenario_growth_rates = []
+        scenario_mean_temps = []
+        scenario_mean_moistures = []
+        scenario_years = []
+        
+        skipped_count = 0
+        
+        for period_idx, (start_year, start_week) in enumerate(starting_points):
+            # Find the starting index for this period
+            start_mask = (Malmö_clim['Year'] == start_year) & (Malmö_clim['Week'] == start_week)
+            start_indices = np.where(start_mask)[0]
+            
+            if len(start_indices) == 0:
+                skipped_count += 1
+                continue
+                
+            start_idx = start_indices[0]
+            
+            # Run simulation for as long as data is available (up to 25 years)
+            max_simulation_weeks = 25 * 53
+            end_idx = min(start_idx + max_simulation_weeks, len(Malmö_clim))
+            
+            # Skip if we don't have at least 1 year of data
+            if end_idx - start_idx < 53:
+                skipped_count += 1
+                continue
+            
+            idx_bl = np.arange(start_idx, end_idx)
+            
+            # Run model
+            Malmö = run_dh_model(
+                Tair=Malmö_clim['Temp'].values[idx_bl],
+                Rw=Malmö_clim['W'].values[idx_bl],
+                Rw_vol=False,
+                Cpool=Malmö_clim['Cpool'].values[idx_bl],
+                params=params,
+                week=Malmö_clim['Week'].values[idx_bl],
+                year=Malmö_clim['Year'].values[idx_bl],
+                DH_plot=False
+            )
+            
+            # Create proper datetime index
+            timestamps = pd.to_datetime(
+                [f"{year}-W{week:02d}-1" for year, week in zip(Malmö['years'].values, Malmö['weeks'].values)],
+                format='%Y-W%W-%w'
+            )
+            
+            # Calculate cumulative increment and height
+            cumulative_incr = np.cumsum(Malmö['Incr'].values * 2)
+            diameter_cm = cumulative_incr / 10
+            diameter_cm = np.maximum(diameter_cm, 1e-6)
+            height_m = calculate_height_from_diameter(diameter_cm, a=species_params['a'], alpha=species_params['alpha'])
+            
+            # Find where height reaches 1.5 meters
+            idx_1_5m = np.where(height_m >= 1.5)[0]
+            if len(idx_1_5m) > 0:
+                time_to_1_5m = idx_1_5m[0]
+                
+                # Cut off the data at 1.5m
+                height_m = height_m[:time_to_1_5m + 1]
+                timestamps = timestamps[:time_to_1_5m + 1]
+                
+                # Calculate growth rate using linear fit
+                time_years = np.array([(t - timestamps[0]).total_seconds() / (365.25 * 24 * 3600) for t in timestamps])
+                slope, intercept, r_value, p_value, std_err = stats.linregress(time_years, height_m)
+                
+                # Calculate mean temperature and soil moisture during growth period
+                growth_period_idx = idx_bl[:time_to_1_5m + 1]
+                mean_temp = np.mean(Malmö_clim['Temp'].values[growth_period_idx])
+                mean_moisture = np.mean(Malmö_clim['W'].values[growth_period_idx])
+                
+                # Store data
+                scenario_growth_rates.append(slope)
+                scenario_mean_temps.append(mean_temp)
+                scenario_mean_moistures.append(mean_moisture)
+                decimal_year = start_year + (start_week - 1) / 52.0
+                scenario_years.append(decimal_year)
+            else:
+                skipped_count += 1
+        
+        # Store correlation data for this species and scenario
+        correlation_data[scenario].append({
+            'species': SELECTED_SPECIES,
+            'years': scenario_years,
+            'growth_rates': scenario_growth_rates,
+            'mean_temps': scenario_mean_temps,
+            'mean_moistures': scenario_mean_moistures
+        })
+        
+        print(f"  {SELECTED_SPECIES}: {len(scenario_growth_rates)} simulations")
+
+# Create correlation scatter plots for each species
+for species in SPECIES_TO_RUN:
+    species_label = species.replace('_', ' ').title()
+    
+    # Create figure with subplots for temperature and soil moisture
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
+    
+    for scenario in SCENARIOS_TO_RUN:
+        # Find data for this species in this scenario
+        species_data = [d for d in correlation_data[scenario] if d['species'] == species]
+        
+        if species_data:
+            data = species_data[0]
+            growth_rates = np.array(data['growth_rates'])
+            mean_temps = np.array(data['mean_temps'])
+            mean_moistures = np.array(data['mean_moistures'])
+            
+            # Get color for this scenario
+            color = scenario_colors.get(scenario, '#000000')
+            
+            # Temperature scatter plot
+            ax1.scatter(mean_temps, growth_rates, alpha=0.5, s=20, color=color, label=scenario.upper())
+            
+            # Linear fit for temperature
+            slope_temp, intercept_temp, r_value_temp, p_value_temp, std_err_temp = stats.linregress(mean_temps, growth_rates)
+            fit_temp = slope_temp * mean_temps + intercept_temp
+            ax1.plot(mean_temps, fit_temp, '--', linewidth=2, color=color, alpha=0.8)
+            
+            # Add correlation coefficient as text (position based on scenario)
+            y_positions = [0.95, 0.88, 0.81, 0.74]  # Different vertical positions for each scenario
+            scenario_idx = SCENARIOS_TO_RUN.index(scenario)
+            ax1.text(0.05, y_positions[scenario_idx], 
+                    f'{scenario.upper()}: R² = {r_value_temp**2:.3f}, r = {r_value_temp:.3f}',
+                    transform=ax1.transAxes, fontsize=10, color=color, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7, edgecolor=color))
+            
+            # Soil moisture scatter plot
+            ax2.scatter(mean_moistures, growth_rates, alpha=0.5, s=20, color=color, label=scenario.upper())
+            
+            # Linear fit for soil moisture
+            slope_moist, intercept_moist, r_value_moist, p_value_moist, std_err_moist = stats.linregress(mean_moistures, growth_rates)
+            fit_moist = slope_moist * mean_moistures + intercept_moist
+            ax2.plot(mean_moistures, fit_moist, '--', linewidth=2, color=color, alpha=0.8)
+            
+            # Add correlation coefficient as text
+            ax2.text(0.05, y_positions[scenario_idx], 
+                    f'{scenario.upper()}: R² = {r_value_moist**2:.3f}, r = {r_value_moist:.3f}',
+                    transform=ax2.transAxes, fontsize=10, color=color, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7, edgecolor=color))
+    
+    # Format temperature plot
+    ax1.set_xlabel('Mean Temperature During Growth (°C)', fontsize=12)
+    ax1.set_ylabel('Growth Rate (m/year)', fontsize=12)
+    ax1.set_title(f'Growth Rate vs Temperature - {species_label}\nMalmö (dashed lines = linear fits)', 
+                 fontsize=12, fontweight='bold')
+    ax1.legend(title='Scenario', fontsize=10, loc='lower right')
+    ax1.grid(True, alpha=0.3)
+    
+    # Format soil moisture plot
+    ax2.set_xlabel('Mean Soil Moisture During Growth (W)', fontsize=12)
+    ax2.set_ylabel('Growth Rate (m/year)', fontsize=12)
+    ax2.set_title(f'Growth Rate vs Soil Moisture - {species_label}\nMalmö (dashed lines = linear fits)', 
+                 fontsize=12, fontweight='bold')
+    ax2.legend(title='Scenario', fontsize=10, loc='lower right')
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    # Save figure
+    filename = f'malmo_{species}_growth_rate_correlations.png'
+    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    print(f"Saved correlation plot: {filename}")
+    plt.show()
+
+# Create combined species comparison correlation plots for each scenario
+if len(SPECIES_TO_RUN) > 1:
+    print("\n" + "="*70)
+    print("Creating species comparison correlation plots...")
+    print("="*70)
+    
+    # Define colors for species
+    species_colors_corr = {
+        'abies_alba': '#1f77b4',
+        'picea_abies': '#ff7f0e',
+        'pseudo_menzii': '#2ca02c'
+    }
+    
+    for scenario in SCENARIOS_TO_RUN:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
+        
+        for species in SPECIES_TO_RUN:
+            species_label = species.replace('_', ' ').title()
+            color = species_colors_corr.get(species, '#000000')
+            
+            # Find data for this species in this scenario
+            species_data = [d for d in correlation_data[scenario] if d['species'] == species]
+            
+            if species_data:
+                data = species_data[0]
+                growth_rates = np.array(data['growth_rates'])
+                mean_temps = np.array(data['mean_temps'])
+                mean_moistures = np.array(data['mean_moistures'])
+                
+                # Temperature scatter plot
+                ax1.scatter(mean_temps, growth_rates, alpha=0.5, s=20, color=color, label=species_label)
+                
+                # Linear fit for temperature
+                slope_temp, intercept_temp, r_value_temp, p_value_temp, std_err_temp = stats.linregress(mean_temps, growth_rates)
+                fit_temp = slope_temp * mean_temps + intercept_temp
+                ax1.plot(mean_temps, fit_temp, '--', linewidth=2, color=color, alpha=0.8)
+                
+                # Add correlation coefficient
+                species_idx = SPECIES_TO_RUN.index(species)
+                y_positions = [0.95, 0.88, 0.81]
+                ax1.text(0.05, y_positions[species_idx], 
+                        f'{species_label}: R² = {r_value_temp**2:.3f}, r = {r_value_temp:.3f}',
+                        transform=ax1.transAxes, fontsize=10, color=color, fontweight='bold',
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7, edgecolor=color))
+                
+                # Soil moisture scatter plot
+                ax2.scatter(mean_moistures, growth_rates, alpha=0.5, s=20, color=color, label=species_label)
+                
+                # Linear fit for soil moisture
+                slope_moist, intercept_moist, r_value_moist, p_value_moist, std_err_moist = stats.linregress(mean_moistures, growth_rates)
+                fit_moist = slope_moist * mean_moistures + intercept_moist
+                ax2.plot(mean_moistures, fit_moist, '--', linewidth=2, color=color, alpha=0.8)
+                
+                # Add correlation coefficient
+                ax2.text(0.05, y_positions[species_idx], 
+                        f'{species_label}: R² = {r_value_moist**2:.3f}, r = {r_value_moist:.3f}',
+                        transform=ax2.transAxes, fontsize=10, color=color, fontweight='bold',
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7, edgecolor=color))
+        
+        # Format temperature plot
+        ax1.set_xlabel('Mean Temperature During Growth (°C)', fontsize=12)
+        ax1.set_ylabel('Growth Rate (m/year)', fontsize=12)
+        ax1.set_title(f'Growth Rate vs Temperature by Species - {scenario.upper()}\nMalmö (dashed lines = linear fits)', 
+                     fontsize=12, fontweight='bold')
+        ax1.legend(title='Species', fontsize=10, loc='lower right')
+        ax1.grid(True, alpha=0.3)
+        
+        # Format soil moisture plot
+        ax2.set_xlabel('Mean Soil Moisture During Growth (W)', fontsize=12)
+        ax2.set_ylabel('Growth Rate (m/year)', fontsize=12)
+        ax2.set_title(f'Growth Rate vs Soil Moisture by Species - {scenario.upper()}\nMalmö (dashed lines = linear fits)', 
+                     fontsize=12, fontweight='bold')
+        ax2.legend(title='Species', fontsize=10, loc='lower right')
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # Save figure
+        filename = f'malmo_species_comparison_correlations_{scenario}.png'
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Saved species comparison correlation plot for {scenario.upper()}: {filename}")
+        plt.show()
+
 print("\n" + "="*70)
 print("All plots created successfully!")
 print("="*70)
